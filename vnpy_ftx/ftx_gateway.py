@@ -9,12 +9,13 @@ from enum import Enum
 from threading import Lock
 from datetime import timezone, datetime
 import pytz
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 from vnpy.event.engine import EventEngine
 from vnpy.trader.gateway import BaseGateway
 from vnpy.trader.constant import (
     # Exchange,
+    Interval,
     Status,
     Direction,
 )
@@ -29,7 +30,9 @@ from vnpy.trader.object import (
     ContractData,
     Product,
     TickData,
-    TradeData
+    TradeData,
+    HistoryRequest,
+    BarData
 )
 
 from vnpy_websocket import WebsocketClient
@@ -74,6 +77,15 @@ PRODUCTTYPE_VT2FTX = {
 }
 
 PRODUCTTYPE_FTX2VT = {v: k for k, v in PRODUCTTYPE_VT2FTX.items()}
+
+INTERVAL_VT2FTX = {
+    Interval.MINUTE: 60,
+    Interval.HOUR: 3600,
+    Interval.DAILY: 86400,
+    Interval.WEEKLY: 604800
+}
+
+INTERVAL_FTX2VT = {v: k for k, v in INTERVAL_VT2FTX.items()}
 
 
 # 合约数据全局缓存字典
@@ -155,6 +167,10 @@ class FtxGateway(BaseGateway):
         """查询委托数据"""
         return self.orders.get(orderid, None)
 
+    def query_history(self, req: HistoryRequest) -> List[BarData]:
+        """查询历史数据"""
+        return self.rest_api.query_history(req)
+
     def close(self) -> None:
         """关闭连接"""
         self.rest_api.stop()
@@ -177,7 +193,7 @@ class FtxRestApi(RestClient):
         self.key: str = ""
         self.secret: str = ""
 
-        # 确保生程的orderid不发生冲突
+        # 确保生成的orderid不发生冲突
         self.order_count: int = 1_000_000
         self.order_count_lock: Lock = Lock()
         self.connect_time: int = 0
@@ -496,6 +512,44 @@ class FtxRestApi(RestClient):
 
         msg = f"撤单失败，状态码：{status_code}，信息：{request.response.text}"
         self.gateway.write_log(msg)
+
+    def query_history(self, req: HistoryRequest) -> List[BarData]:
+        """查询历史数据"""
+        history = []
+        start = datetime.timestamp(req.start)
+        end = datetime.timestamp(req.end)
+        params = {
+                "resolution": INTERVAL_VT2FTX[req.interval],
+                "start_time": start,
+                "end_time": end
+            }
+        path = f"/api/markets/{req.symbol}/candles?"
+
+        resp = self.request(
+            "GET",
+            path,
+            data={"security": Security.NONE},
+            params=params
+        )
+
+        data = resp.json()
+        if not data:
+            return 0
+        for his_data in data["result"]:
+            bar = BarData(
+                symbol=req.symbol,
+                exchange=req.exchange,
+                datetime=datetime.utcfromtimestamp(his_data["time"]/1000),
+                interval=req.interval,
+                volume=his_data["volume"],
+                open_price=his_data["open"],
+                high_price=his_data["high"],
+                low_price=his_data["low"],
+                close_price=his_data["close"],
+                gateway_name=self.gateway_name
+            )
+            history.append(bar)
+        return history
 
 
 class FtxWebsocketApi(WebsocketClient):
