@@ -34,9 +34,11 @@ from vnpy.trader.object import (
     HistoryRequest,
     BarData
 )
+from vnpy.trader.event import EVENT_TIMER
 
 from vnpy_websocket import WebsocketClient
 from vnpy_rest import Request, RestClient
+# from vnpy.api.websocket import WebsocketClient
 from requests.exceptions import SSLError
 
 
@@ -130,6 +132,8 @@ class FtxGateway(BaseGateway):
         self.rest_api.connect(key, secret, proxy_host, proxy_port)
         self.ws_api.connect(key, secret, proxy_host, proxy_port)
 
+        self.init_ping()
+
     def subscribe(self, req: SubscribeRequest) -> None:
         """订阅行情"""
         self.ws_api.subscribe(req)
@@ -175,6 +179,19 @@ class FtxGateway(BaseGateway):
         """关闭连接"""
         self.rest_api.stop()
         self.ws_api.stop()
+
+    def process_timer_event(self, event) -> None:
+        """定时事件处理"""
+        self.count += 1
+        if self.count < 15:
+            return
+        self.count = 0
+        self.ws_api.ping()
+
+    def init_ping(self) -> None:
+        """初始化心跳"""
+        self.count: int = 0
+        self.event_engine.register(EVENT_TIMER, self.process_timer_event)
 
 
 class FtxRestApi(RestClient):
@@ -585,10 +602,15 @@ class FtxWebsocketApi(WebsocketClient):
         """连接成功回报"""
         self.gateway.write_log("行情Websocket API连接刷新")
 
+        self.ping()
         self.authenticate(self.api_key, self.api_secret_key)
 
         for req in list(self.subscribed.values()):
             self.subscribe(req)
+
+    def on_disconnected(self) -> None:
+        self.gateway.write_log("行情Websocket 连接断开")
+        print("断开")
 
     def authenticate(
         self,
@@ -637,6 +659,9 @@ class FtxWebsocketApi(WebsocketClient):
         """订阅个人orders和fills行情"""
         self.send_packet({'op': 'subscribe', 'channel': 'fills'})
         self.send_packet({'op': 'subscribe', 'channel': 'orders'})
+
+    def ping(self) -> None:
+        self.send_packet({'op': 'ping'})
 
     def on_packet(self, packet: Any) -> None:
         """推送数据回报"""
