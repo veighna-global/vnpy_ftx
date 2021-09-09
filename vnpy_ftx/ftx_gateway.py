@@ -536,10 +536,10 @@ class FtxRestApi(RestClient):
         start = datetime.timestamp(req.start)
         end = datetime.timestamp(req.end)
         params = {
-                "resolution": INTERVAL_VT2FTX[req.interval],
-                "start_time": start,
-                "end_time": end
-            }
+            "resolution": INTERVAL_VT2FTX[req.interval],
+            "start_time": start,
+            "end_time": end
+        }
         path = f"/api/markets/{req.symbol}/candles?"
 
         resp = self.request(
@@ -556,7 +556,7 @@ class FtxRestApi(RestClient):
             bar = BarData(
                 symbol=req.symbol,
                 exchange=req.exchange,
-                datetime=datetime.utcfromtimestamp(his_data["time"]/1000),
+                datetime=datetime.utcfromtimestamp(his_data["time"] / 1000),
                 interval=req.interval,
                 volume=his_data["volume"],
                 open_price=his_data["open"],
@@ -622,11 +622,11 @@ class FtxWebsocketApi(WebsocketClient):
         signature_payload = f'{timestamp}websocket_login'.encode()
         signature: str = hmac.new(api_secret_key.encode(), signature_payload, 'sha256').hexdigest()
         auth = {
-                'args': {'key': api_key,
-                         'sign': signature,
-                         'time': timestamp},
-                'op': 'login'
-                }
+            'args': {'key': api_key,
+                     'sign': signature,
+                     'time': timestamp},
+            'op': 'login'
+        }
         self.send_packet(auth)
 
     def subscribe(self, req: SubscribeRequest) -> None:
@@ -699,7 +699,7 @@ class FtxWebsocketApi(WebsocketClient):
                     volume=float(d["size"]),
                     datetime=change_datetime(d["time"]),
                     gateway_name=self.gateway_name,
-                    )
+                )
                 print(trade)
                 self.gateway.on_trade(trade)
                 self.gateway.query_position()
