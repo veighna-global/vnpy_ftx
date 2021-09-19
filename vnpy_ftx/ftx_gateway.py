@@ -7,7 +7,7 @@ import hmac
 from copy import copy
 from enum import Enum
 from threading import Lock
-from datetime import timezone, datetime
+from datetime import timezone, datetime, timedelta
 import pytz
 from typing import Any, Dict, List
 
@@ -38,7 +38,6 @@ from vnpy.trader.event import EVENT_TIMER
 
 from vnpy_websocket import WebsocketClient
 from vnpy_rest import Request, RestClient
-# from vnpy.api.websocket import WebsocketClient
 from requests.exceptions import SSLError
 
 
@@ -98,6 +97,78 @@ symbol_contract_map: Dict[str, ContractData] = {}
 class Security(Enum):
     NONE: int = 0
     SIGNED: int = 1
+
+
+class OrderBook:
+    """用于维护orderbook"""
+
+    def __init__(self):
+        """"""
+        self.bids = []
+        self.asks = []
+        self.bid_dict = {}
+        self.ask_dict = {}
+
+    def init(self, bid: List[List], ask: List[List]) -> List[List]:
+        """初始化"""
+        for i in bid:
+            self.bids.append(float(i[0]))
+            self.bid_dict[i[0]] = float(i[1])
+        self.bids.sort(reverse=True)
+
+        for i in ask:
+            self.asks.append(float(i[0]))
+            self.ask_dict[i[0]] = float(i[1])
+        self.asks.sort(reverse=True)
+
+        p: List[List] = []
+        q: List[List] = []
+        for i in range(5):
+            p.append([self.bids[i], self.bid_dict[self.bids[i]]])
+            q.append([self.asks[i], self.ask_dict[self.asks[i]]])
+
+        return {"bid": p, "ask": q}
+
+    def bid_add(self, bid: List[List]) -> None:
+        """添加bid"""
+        if len(bid) > 0:
+            for i in bid:
+                if float(i[1]) == 0:
+                    if float(i[0]) in self.bids:
+                        self.bids.remove(float(i[0]))
+                        self.bid_dict.pop(float(i[0]))
+                else:
+                    if float(i[0]) not in self.bids:
+                        self.bids.append(float(i[0]))
+                    self.bid_dict[float(i[0])] = float(i[1])
+            self.bids.sort(reverse=True)
+
+    def ask_add(self, ask: List[List]) -> None:
+        """添加ask"""
+        if len(ask) > 0:
+            for i in ask:
+                if float(i[1]) == 0:
+                    if float(i[0]) in self.asks:
+                        self.asks.remove(float(i[0]))
+                        self.ask_dict.pop(float(i[0]))
+                else:
+                    if float(i[0]) not in self.asks:
+                        self.asks.append(float(i[0]))
+                    self.ask_dict[float(i[0])] = float(i[1])
+            self.asks.sort(reverse=False)
+
+    def add(self, bid: List[List], ask: List[List]) -> List[List]:
+        """添加bid和ask"""
+        self.bid_add(bid)
+        self.ask_add(ask)
+
+        p: List[List] = []
+        q: List[List] = []
+        for i in range(5):
+            p.append([self.bids[i], self.bid_dict[self.bids[i]]])
+            q.append([self.asks[i], self.ask_dict[self.asks[i]]])
+
+        return {"bid": p, "ask": q}
 
 
 class FtxGateway(BaseGateway):
@@ -175,6 +246,10 @@ class FtxGateway(BaseGateway):
         """查询历史数据"""
         return self.rest_api.query_history(req)
 
+    def query_price(self, symbol: str) -> List:
+        """查询高开低收价格"""
+        return self.rest_api.query_price(symbol)
+
     def close(self) -> None:
         """关闭连接"""
         self.rest_api.stop()
@@ -183,6 +258,7 @@ class FtxGateway(BaseGateway):
     def process_timer_event(self, event) -> None:
         """定时事件处理"""
         self.count += 1
+        self.ws_api.update_holc()
         if self.count < 15:
             return
         self.count = 0
@@ -399,7 +475,6 @@ class FtxRestApi(RestClient):
 
             if account.balance:
                 self.gateway.on_account(account)
-                print(account)
 
         self.gateway.write_log("账户资金查询成功")
 
@@ -421,8 +496,6 @@ class FtxRestApi(RestClient):
 
                 if position.volume:
                     self.gateway.on_position(position)
-
-                print(position)
 
         self.gateway.write_log("持仓信息查询成功")
 
@@ -463,7 +536,6 @@ class FtxRestApi(RestClient):
                 gateway_name=self.gateway_name,
             )
             self.gateway.on_order(order)
-            print(order)
 
         self.gateway.write_log("委托信息查询成功")
 
@@ -568,6 +640,26 @@ class FtxRestApi(RestClient):
             history.append(bar)
         return history
 
+    def query_price(self, symbol: str) -> List:
+        """查询当天高开低收"""
+        start = datetime.timestamp(datetime.now() - timedelta(days=1))
+        params = {
+            "resolution": 86400,
+            "start_time": start
+        }
+        path = f"/api/markets/{symbol}/candles?"
+
+        resp = self.request(
+            "GET",
+            path,
+            data={"security": Security.NONE},
+            params=params
+        )
+        data = resp.json()
+
+        return data["result"][0]["open"], data["result"][0]["high"], data["result"][0]["low"],\
+            data["result"][0]["close"], data["result"][0]["volume"]
+
 
 class FtxWebsocketApi(WebsocketClient):
     """FTX交易Websocket API"""
@@ -580,6 +672,11 @@ class FtxWebsocketApi(WebsocketClient):
         self.gateway_name: str = gateway.gateway_name
 
         self.subscribed: Dict[str, SubscribeRequest] = {}
+        self.orderbook: Dict[str, OrderBook] = {}
+        self.holc: Dict[str, Dict] = {}
+
+        self.start_time = datetime.utcnow().date()
+        self.count = 0
 
     def connect(
         self,
@@ -609,8 +706,8 @@ class FtxWebsocketApi(WebsocketClient):
             self.subscribe(req)
 
     def on_disconnected(self) -> None:
+        """"""
         self.gateway.write_log("行情Websocket 连接断开")
-        print("断开")
 
     def authenticate(
         self,
@@ -638,10 +735,16 @@ class FtxWebsocketApi(WebsocketClient):
         if req.vt_symbol in self.subscribed:
             return
 
-        self.subscribed[req.vt_symbol] = req
+        self.holc[req.symbol] = {}
+        self.holc[req.symbol]["open"], self.holc[req.symbol]["high"], self.holc[req.symbol]["low"], self.holc[req.symbol]["close"], self.holc[req.symbol]["volume"] = self.gateway.query_price(req.symbol)
 
+        self.subscribed[req.vt_symbol] = req
         subscribe_ticker = {'op': 'subscribe', 'channel': 'ticker', 'market': req.symbol}
         self.send_packet(subscribe_ticker)
+        subscribe_orderbook = {'op': 'subscribe', 'channel': 'orderbook', 'market': req.symbol}
+        self.send_packet(subscribe_orderbook)
+        subscribe_trades = {'op': 'subscribe', 'channel': 'trades', 'market': req.symbol}
+        self.send_packet(subscribe_trades)
         self.subscribe_private_channels()
 
     def unsubscribe(self, req: SubscribeRequest) -> None:
@@ -654,6 +757,13 @@ class FtxWebsocketApi(WebsocketClient):
             self.subscribed.pop(req.vt_symbol)
             unsubscribe_ticker = {'op': 'unsubscribe', 'channel': 'ticker', 'market': req.symbol}
             self.send_packet(unsubscribe_ticker)
+            unsubscribe_orderbook = {'op': 'unsubscribe', 'channel': 'orderbook', 'market': req.symbol}
+            self.send_packet(unsubscribe_orderbook)
+
+            # 释放该合约缓存数据
+            symbol = req.vt_symbol.split(".")[0]
+            self.orderbook.pop(symbol)
+            self.holc.pop(symbol)
 
     def subscribe_private_channels(self) -> None:
         """订阅个人orders和fills行情"""
@@ -661,30 +771,86 @@ class FtxWebsocketApi(WebsocketClient):
         self.send_packet({'op': 'subscribe', 'channel': 'orders'})
 
     def ping(self) -> None:
+        """发送心跳"""
         self.send_packet({'op': 'ping'})
+
+    def update_holc(self) -> None:
+        """轮流更新订阅代码的holc"""
+        # 如果日期发生改变，更新所有已订阅合约的高开低收
+        if datetime.utcnow().date() != self.start_time:
+            for key, value in self.subscribed:
+                symbol = key.split(".")[0]
+                self.holc[symbol]["open"], self.holc[symbol]["high"], self.holc[symbol]["low"], self.holc[symbol]["close"], self.holc[symbol]["volume"] = self.gateway.query_price(symbol)
+        else:
+            # 每次调用该函数时刷新已订阅合约中的一只
+            vt_symbol = list(self.subscribed.keys())
+            if len(vt_symbol) == 0:
+                return
+            if self.count >= len(vt_symbol):
+                self.count = 0
+            symbol = vt_symbol[self.count].split(".")[0]
+
+            self.holc[symbol]["open"], self.holc[symbol]["high"], self.holc[symbol]["low"], self.holc[symbol]["close"], self.holc[symbol]["volume"] = self.gateway.query_price(symbol)
+            self.count += 1
 
     def on_packet(self, packet: Any) -> None:
         """推送数据回报"""
+        # 更新推送
         if packet["type"] == "update":
             channel = packet["channel"]
+            symbol = packet["market"]
             if channel == "ticker":
-                # print("TICK", packet)
-                d = packet["data"]
+                self.holc[symbol]["last_price"] = packet["data"]["last"]
+                if self.holc[symbol]["last_price"] > self.holc[symbol]["high"]:
+                    self.holc[symbol]["high"] = self.holc[symbol]["last_price"]
+                if self.holc[symbol]["last_price"] < self.holc[symbol]["low"]:
+                    self.holc[symbol]["low"] = self.holc[symbol]["last_price"]
+
+            elif channel == "orderbook":
+                # print(packet)
+                symbol = packet["market"]
+                orderbook = self.orderbook[symbol].add(packet["data"]["bids"], packet["data"]["asks"])
                 tick: TickData = TickData(
                     gateway_name=self.gateway_name,
-                    symbol=packet["market"],
+                    symbol=symbol,
                     exchange=Exchange.FTX,
-                    datetime=generate_datetime(d["time"]),
+                    datetime=generate_datetime(packet["data"]["time"]),
 
-                    bid_price_1=d["bid"],
-                    ask_price_1=d["ask"],
-                    bid_volume_1=d["bidSize"],
-                    ask_volume_1=d["askSize"],
-                    last_price=d["last"]
+                    name="FTX",
+                    volume=self.holc[symbol]["volume"],
+                    open_price=self.holc[symbol]["open"],
+                    high_price=self.holc[symbol]["high"],
+                    low_price=self.holc[symbol]["low"],
+                    last_price=self.holc[symbol]["last_price"],
+
+                    bid_price_1=orderbook["bid"][0][0],
+                    bid_volume_1=orderbook["bid"][0][1],
+                    bid_price_2=orderbook["bid"][1][0],
+                    bid_volume_2=orderbook["bid"][1][1],
+                    bid_price_3=orderbook["bid"][2][0],
+                    bid_volume_3=orderbook["bid"][2][1],
+                    bid_price_4=orderbook["bid"][3][0],
+                    bid_volume_4=orderbook["bid"][3][1],
+                    bid_price_5=orderbook["bid"][4][0],
+                    bid_volume_5=orderbook["bid"][4][1],
+                    ask_price_1=orderbook["ask"][0][0],
+                    ask_volume_1=orderbook["ask"][0][1],
+                    ask_price_2=orderbook["ask"][1][0],
+                    ask_volume_2=orderbook["ask"][1][1],
+                    ask_price_3=orderbook["ask"][2][0],
+                    ask_volume_3=orderbook["ask"][2][1],
+                    ask_price_4=orderbook["ask"][3][0],
+                    ask_volume_4=orderbook["ask"][3][1],
+                    ask_price_5=orderbook["ask"][4][0],
+                    ask_volume_5=orderbook["ask"][4][1],
                 )
-                # print(tick)
                 if tick.last_price:
                     self.gateway.on_tick(copy(tick))
+
+            elif channel == "trades":
+                # self.last_price = packet["data"][0]["price"]
+                # self.last_volume = packet["data"][0]["size"]
+                pass
 
             elif channel == "fills":
                 # print("fills", packet)
@@ -743,6 +909,56 @@ class FtxWebsocketApi(WebsocketClient):
 
             else:
                 print(packet)
+
+        # 初始推送
+        elif packet["type"] == "partial":
+            channel = packet["channel"]
+            if channel == "orderbook":
+                symbol = packet['market']
+                self.orderbook[symbol] = OrderBook()
+                orderbook = self.orderbook[symbol].init(packet["data"]["bids"], packet["data"]["asks"])
+                tick: TickData = TickData(
+                    gateway_name=self.gateway_name,
+                    symbol=symbol,
+                    exchange=Exchange.FTX,
+                    datetime=generate_datetime(packet["data"]["time"]),
+
+                    name="FTX",
+                    volume=self.holc[symbol]["volume"],
+                    open_price=self.holc[symbol]["open"],
+                    high_price=self.holc[symbol]["high"],
+                    low_price=self.holc[symbol]["low"],
+                    last_price=self.holc[symbol]["last_price"],
+
+                    bid_price_1=orderbook["bid"][0][0],
+                    bid_volume_1=orderbook["bid"][0][1],
+                    bid_price_2=orderbook["bid"][1][0],
+                    bid_volume_2=orderbook["bid"][1][1],
+                    bid_price_3=orderbook["bid"][2][0],
+                    bid_volume_3=orderbook["bid"][2][1],
+                    bid_price_4=orderbook["bid"][3][0],
+                    bid_volume_4=orderbook["bid"][3][1],
+                    bid_price_5=orderbook["bid"][4][0],
+                    bid_volume_5=orderbook["bid"][4][1],
+
+                    ask_price_1=orderbook["ask"][0][0],
+                    ask_volume_1=orderbook["ask"][0][1],
+                    ask_price_2=orderbook["ask"][1][0],
+                    ask_volume_2=orderbook["ask"][1][1],
+                    ask_price_3=orderbook["ask"][2][0],
+                    ask_volume_3=orderbook["ask"][2][1],
+                    ask_price_4=orderbook["ask"][3][0],
+                    ask_volume_4=orderbook["ask"][3][1],
+                    ask_price_5=orderbook["ask"][4][0],
+                    ask_volume_5=orderbook["ask"][4][1],
+
+                )
+                if tick.last_price:
+                    self.gateway.on_tick(copy(tick))
+
+            else:
+                print(packet)
+
         else:
             print(packet)
 
