@@ -2,7 +2,7 @@ from vnpy.event import EventEngine
 from vnpy.trader.engine import MainEngine
 from vnpy.trader.ui import MainWindow, create_qapp
 
-from vnpy_ftx.ftx_gateway import FtxGateway
+from vnpy_ftx import FtxGateway
 
 
 def main():

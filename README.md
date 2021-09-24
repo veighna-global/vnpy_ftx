@@ -1,11 +1,11 @@
-# vn.py框架的FTX底层接口
+# vn.py框架的FTX交易接口
 
 <p align="center">
   <img src ="https://vnpy.oss-cn-shanghai.aliyuncs.com/vnpy-logo.png"/>
 </p>
 
 <p align="center">
-    <img src ="https://img.shields.io/badge/version-2021.8.19-blueviolet.svg"/>
+    <img src ="https://img.shields.io/badge/version-2021.9.24-blueviolet.svg"/>
     <img src ="https://img.shields.io/badge/platform-windows|linux|macos-yellow.svg"/>
     <img src ="https://img.shields.io/badge/python-3.7-blue.svg" />
     <img src ="https://img.shields.io/github/license/vnpy/vnpy.svg?color=orange"/>
@@ -19,9 +19,15 @@
 
 ## 安装
 
-安装需要基于2.2.0版本以上的[VN Studio](https://www.vnpy.com)。
+安装需要基于2.6.0版本以上的[VN Studio](https://www.vnpy.com)。
 
-下载解压后在cmd中运行
+直接使用pip命令：
+
+```
+pip install vnpy_ftx
+```
+
+下载解压后在cmd中运行：
 
 ```
 python setup.py install
@@ -36,7 +42,7 @@ from vnpy.event import EventEngine
 from vnpy.trader.engine import MainEngine
 from vnpy.trader.ui import MainWindow, create_qapp
 
-from vnpy_ftx.ftx_gateway import FtxGateway
+from vnpy_ftx import FtxGateway
 
 
 def main():
