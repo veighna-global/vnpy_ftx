@@ -1,6 +1,3 @@
-"""
-Gateway for FTX
-"""
 import json
 import time
 import hmac
@@ -17,6 +14,7 @@ from vnpy.trader.constant import (
     Interval,
     Status,
     Direction,
+    Exchange
 )
 from vnpy.trader.object import (
     AccountData,
@@ -37,12 +35,6 @@ from vnpy.trader.event import EVENT_TIMER
 
 from vnpy_websocket import WebsocketClient
 from vnpy_rest import Request, RestClient
-from requests.exceptions import SSLError
-
-
-class Exchange(Enum):
-    """"""
-    FTX = "FTX"
 
 
 # 中国时区
@@ -564,7 +556,7 @@ class FtxRestApi(RestClient):
         order.status = Status.REJECTED
         self.gateway.on_order(order)
 
-        if not issubclass(exception_type, (ConnectionError, SSLError)):
+        if not issubclass(exception_type, ConnectionError):
             self.on_error(exception_type, exception_value, tb, request)
 
     def on_send_order_failed(self, status_code: str, request: Request) -> None:
