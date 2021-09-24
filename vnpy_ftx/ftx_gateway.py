@@ -14,7 +14,6 @@ from typing import Any, Dict, List
 from vnpy.event.engine import EventEngine
 from vnpy.trader.gateway import BaseGateway
 from vnpy.trader.constant import (
-    # Exchange,
     Interval,
     Status,
     Direction,
@@ -119,7 +118,7 @@ class OrderBook:
         for i in ask:
             self.asks.append(float(i[0]))
             self.ask_dict[i[0]] = float(i[1])
-        self.asks.sort(reverse=True)
+        self.asks.sort(reverse=False)
 
         p: List[List] = []
         q: List[List] = []
@@ -183,9 +182,9 @@ class FtxGateway(BaseGateway):
 
     exchanges: Exchange = [Exchange.FTX]
 
-    def __init__(self, event_engine: EventEngine, gateway: str = "FTX") -> None:
+    def __init__(self, event_engine: EventEngine, gateway_name: str = "FTX") -> None:
         """构造函数"""
-        super().__init__(event_engine, gateway)
+        super().__init__(event_engine, gateway_name)
 
         self.ws_api: "FtxWebsocketApi" = FtxWebsocketApi(self)
         self.rest_api: "FtxRestApi" = FtxRestApi(self)
@@ -258,7 +257,6 @@ class FtxGateway(BaseGateway):
     def process_timer_event(self, event) -> None:
         """定时事件处理"""
         self.count += 1
-        self.ws_api.update_holc()
         if self.count < 15:
             return
         self.count = 0
@@ -462,8 +460,6 @@ class FtxRestApi(RestClient):
 
     def on_query_account(self, data: dict, request: Request) -> None:
         """资金查询回报"""
-        # print("账户资金查询成功")
-        # print(data)
         for asset in data["result"]:
             account: AccountData = AccountData(
                 accountid=asset["coin"],
@@ -480,8 +476,6 @@ class FtxRestApi(RestClient):
 
     def on_query_position(self, data: dict, request: Request) -> None:
         """持仓查询回报"""
-        # print("持仓信息查询成功")
-        # print(data)
         for d in data["result"]:
             if d["entryPrice"] is not None:
                 position: PositionData = PositionData(
@@ -501,8 +495,6 @@ class FtxRestApi(RestClient):
 
     def on_query_order(self, data: dict, request: Request) -> None:
         """未成交委托查询回报"""
-        # print("委托信息查询成功")
-        # print(data)
         for d in data["result"]:
             # 先判断订单状态
             current_status = d["status"]
@@ -541,8 +533,6 @@ class FtxRestApi(RestClient):
 
     def on_query_contract(self, data: dict, request: Request):
         """合约信息查询回报"""
-        # print("合约信息查询成功")
-        print("合约数量:", len(data["result"]))
         for d in data["result"]:
             contract: ContractData = ContractData(
                 symbol=d["name"],
@@ -576,7 +566,6 @@ class FtxRestApi(RestClient):
 
         if not issubclass(exception_type, (ConnectionError, SSLError)):
             self.on_error(exception_type, exception_value, tb, request)
-        print(exception_value)
 
     def on_send_order_failed(self, status_code: str, request: Request) -> None:
         """委托下单失败服务器报错回报"""
@@ -586,7 +575,6 @@ class FtxRestApi(RestClient):
 
         msg: str = f"委托失败，状态码：{status_code}，信息：{request.response.text}"
         self.gateway.write_log(msg)
-        print(msg)
 
     def on_cancel_order(self, status_code: str, request: Request) -> None:
         """委托撤单回报"""
@@ -657,8 +645,7 @@ class FtxRestApi(RestClient):
         )
         data = resp.json()
 
-        return data["result"][0]["open"], data["result"][0]["high"], data["result"][0]["low"],\
-            data["result"][0]["close"], data["result"][0]["volume"]
+        return data["result"][0]["open"], data["result"][0]["high"], data["result"][0]["low"], data["result"][0]["close"]
 
 
 class FtxWebsocketApi(WebsocketClient):
@@ -736,15 +723,14 @@ class FtxWebsocketApi(WebsocketClient):
             return
 
         self.holc[req.symbol] = {}
-        self.holc[req.symbol]["open"], self.holc[req.symbol]["high"], self.holc[req.symbol]["low"], self.holc[req.symbol]["close"], self.holc[req.symbol]["volume"] = self.gateway.query_price(req.symbol)
+        self.holc[req.symbol]["start_time"] = datetime.utcnow().date().day
+        self.holc[req.symbol]["open"], self.holc[req.symbol]["high"], self.holc[req.symbol]["low"], self.holc[req.symbol]["close"] = self.gateway.query_price(req.symbol)
 
         self.subscribed[req.vt_symbol] = req
         subscribe_ticker = {'op': 'subscribe', 'channel': 'ticker', 'market': req.symbol}
         self.send_packet(subscribe_ticker)
         subscribe_orderbook = {'op': 'subscribe', 'channel': 'orderbook', 'market': req.symbol}
         self.send_packet(subscribe_orderbook)
-        subscribe_trades = {'op': 'subscribe', 'channel': 'trades', 'market': req.symbol}
-        self.send_packet(subscribe_trades)
         self.subscribe_private_channels()
 
     def unsubscribe(self, req: SubscribeRequest) -> None:
@@ -774,24 +760,10 @@ class FtxWebsocketApi(WebsocketClient):
         """发送心跳"""
         self.send_packet({'op': 'ping'})
 
-    def update_holc(self) -> None:
-        """轮流更新订阅代码的holc"""
-        # 如果日期发生改变，更新所有已订阅合约的高开低收
-        if datetime.utcnow().date() != self.start_time:
-            for key, value in self.subscribed:
-                symbol = key.split(".")[0]
-                self.holc[symbol]["open"], self.holc[symbol]["high"], self.holc[symbol]["low"], self.holc[symbol]["close"], self.holc[symbol]["volume"] = self.gateway.query_price(symbol)
-        else:
-            # 每次调用该函数时刷新已订阅合约中的一只
-            vt_symbol = list(self.subscribed.keys())
-            if len(vt_symbol) == 0:
-                return
-            if self.count >= len(vt_symbol):
-                self.count = 0
-            symbol = vt_symbol[self.count].split(".")[0]
-
-            self.holc[symbol]["open"], self.holc[symbol]["high"], self.holc[symbol]["low"], self.holc[symbol]["close"], self.holc[symbol]["volume"] = self.gateway.query_price(symbol)
-            self.count += 1
+    def update_holc(self, symbol) -> None:
+        """更新订阅代码的holc"""
+        if symbol in self.subscribed.keys():
+            self.holc[symbol]["open"], self.holc[symbol]["high"], self.holc[symbol]["low"], self.holc[symbol]["close"] = self.gateway.query_price(symbol)
 
     def on_packet(self, packet: Any) -> None:
         """推送数据回报"""
@@ -799,15 +771,21 @@ class FtxWebsocketApi(WebsocketClient):
         if packet["type"] == "update":
             channel = packet["channel"]
             symbol = packet["market"]
+
             if channel == "ticker":
                 self.holc[symbol]["last_price"] = packet["data"]["last"]
-                if self.holc[symbol]["last_price"] > self.holc[symbol]["high"]:
-                    self.holc[symbol]["high"] = self.holc[symbol]["last_price"]
-                if self.holc[symbol]["last_price"] < self.holc[symbol]["low"]:
-                    self.holc[symbol]["low"] = self.holc[symbol]["last_price"]
+                tm_mday = time.gmtime(packet["data"]["time"]).tm_mday
+
+                if self.holc[symbol]["start_time"] == tm_mday:
+                    if self.holc[symbol]["last_price"] > self.holc[symbol]["high"]:
+                        self.holc[symbol]["high"] = self.holc[symbol]["last_price"]
+                    if self.holc[symbol]["last_price"] < self.holc[symbol]["low"]:
+                        self.holc[symbol]["low"] = self.holc[symbol]["last_price"]
+                else:
+                    self.holc[symbol]["start_time"] = tm_mday
+                    self.update_holc(symbol)
 
             elif channel == "orderbook":
-                # print(packet)
                 symbol = packet["market"]
                 orderbook = self.orderbook[symbol].add(packet["data"]["bids"], packet["data"]["asks"])
                 tick: TickData = TickData(
@@ -817,7 +795,7 @@ class FtxWebsocketApi(WebsocketClient):
                     datetime=generate_datetime(packet["data"]["time"]),
 
                     name="FTX",
-                    volume=self.holc[symbol]["volume"],
+                    volume=0,
                     open_price=self.holc[symbol]["open"],
                     high_price=self.holc[symbol]["high"],
                     low_price=self.holc[symbol]["low"],
@@ -853,7 +831,6 @@ class FtxWebsocketApi(WebsocketClient):
                 pass
 
             elif channel == "fills":
-                # print("fills", packet)
                 d = packet["data"]
                 trade: TradeData = TradeData(
                     symbol=d["market"],
@@ -866,12 +843,10 @@ class FtxWebsocketApi(WebsocketClient):
                     datetime=change_datetime(d["time"]),
                     gateway_name=self.gateway_name,
                 )
-                print(trade)
                 self.gateway.on_trade(trade)
                 self.gateway.query_position()
 
             elif channel == "orders":
-                # print("orders", packet)
                 d = packet["data"]
                 current_status = d["status"]
                 size = d["size"]
@@ -903,7 +878,6 @@ class FtxWebsocketApi(WebsocketClient):
                     datetime=change_datetime(d["createdAt"]),
                     gateway_name=self.gateway_name,
                 )
-                print(order)
                 self.gateway.order_id[d["id"]] = d["clientId"]
                 self.gateway.on_order(order)
 
@@ -924,7 +898,7 @@ class FtxWebsocketApi(WebsocketClient):
                     datetime=generate_datetime(packet["data"]["time"]),
 
                     name="FTX",
-                    volume=self.holc[symbol]["volume"],
+                    volume=0,
                     open_price=self.holc[symbol]["open"],
                     high_price=self.holc[symbol]["high"],
                     low_price=self.holc[symbol]["low"],
