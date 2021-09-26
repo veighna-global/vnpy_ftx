@@ -22,7 +22,7 @@
 
 import importlib_metadata
 
-from .ftx_gateway import FtxGateways
+from .ftx_gateway import FtxGateway
 
 
 try:
