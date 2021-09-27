@@ -57,7 +57,8 @@ ORDERTYPE_FTX2VT = {v: k for k, v in ORDERTYPE_VT2FTX.items()}
 # 买卖方向映射
 DIRECTION_VT2FTX = {
     Direction.LONG: "buy",
-    Direction.SHORT: "sell"
+    Direction.SHORT: "sell",
+    Direction.NET: "net"
 }
 
 DIRECTION_FTX2VT = {v: k for k, v in DIRECTION_VT2FTX.items()}
@@ -469,19 +470,17 @@ class FtxRestApi(RestClient):
     def on_query_position(self, data: dict, request: Request) -> None:
         """持仓查询回报"""
         for d in data["result"]:
-            if d["entryPrice"] is not None:
-                position: PositionData = PositionData(
-                    symbol=d["future"],
-                    exchange=Exchange.FTX,
-                    direction=DIRECTION_FTX2VT[d["side"]],
-                    volume=float(d["size"]),
-                    price=float(d["entryPrice"]),
-                    pnl=float(d["unrealizedPnl"]),
-                    gateway_name=self.gateway_name,
-                )
+            position: PositionData = PositionData(
+                symbol=d["future"],
+                exchange=Exchange.FTX,
+                direction=DIRECTION_FTX2VT["net"],
+                volume=float(d["netSize"]),
+                price=0,
+                pnl=float(d["unrealizedPnl"]),
+                gateway_name=self.gateway_name,
+            )
 
-                if position.volume:
-                    self.gateway.on_position(position)
+            self.gateway.on_position(position)
 
         self.gateway.write_log("持仓信息查询成功")
 
@@ -762,9 +761,9 @@ class FtxWebsocketApi(WebsocketClient):
         # 更新推送
         if packet["type"] == "update":
             channel = packet["channel"]
-            symbol = packet["market"]
 
             if channel == "ticker":
+                symbol = packet["market"]
                 self.holc[symbol]["last_price"] = packet["data"]["last"]
                 tm_mday = time.gmtime(packet["data"]["time"]).tm_mday
 
@@ -818,8 +817,6 @@ class FtxWebsocketApi(WebsocketClient):
                     self.gateway.on_tick(copy(tick))
 
             elif channel == "trades":
-                # self.last_price = packet["data"][0]["price"]
-                # self.last_volume = packet["data"][0]["size"]
                 pass
 
             elif channel == "fills":
@@ -837,6 +834,7 @@ class FtxWebsocketApi(WebsocketClient):
                 )
                 self.gateway.on_trade(trade)
                 self.gateway.query_position()
+                self.gateway.query_account()
 
             elif channel == "orders":
                 d = packet["data"]
