@@ -35,6 +35,7 @@ from vnpy.trader.event import EVENT_TIMER
 
 from vnpy_websocket import WebsocketClient
 from vnpy_rest import Request, RestClient
+from vnpy_rest.rest_client import Response
 
 
 # 中国时区
@@ -71,15 +72,23 @@ PRODUCTTYPE_VT2FTX = {
 
 PRODUCTTYPE_FTX2VT = {v: k for k, v in PRODUCTTYPE_VT2FTX.items()}
 
-INTERVAL_VT2FTX = {
+# 窗口长度映射
+WINDOW_VT2FTX = {
     Interval.MINUTE: 60,
     Interval.HOUR: 3600,
     Interval.DAILY: 86400,
     Interval.WEEKLY: 604800
 }
 
-INTERVAL_FTX2VT = {v: k for k, v in INTERVAL_VT2FTX.items()}
+WINDOW_FTX2VT = {v: k for k, v in WINDOW_VT2FTX.items()}
 
+# 历史数据长度限制映射
+LMIMIT_VT2FTX = {
+    Interval.MINUTE: 950,
+    Interval.HOUR: 1400,
+    Interval.DAILY: 1400,
+    Interval.WEEKLY: 1400
+}
 
 # 合约数据全局缓存字典
 symbol_contract_map: Dict[str, ContractData] = {}
@@ -583,40 +592,86 @@ class FtxRestApi(RestClient):
 
     def query_history(self, req: HistoryRequest) -> List[BarData]:
         """查询历史数据"""
-        history = []
-        start = datetime.timestamp(req.start)
-        end = datetime.timestamp(req.end)
-        params = {
-            "resolution": INTERVAL_VT2FTX[req.interval],
-            "start_time": start,
-            "end_time": end
-        }
-        path = f"/api/markets/{req.symbol}/candles?"
+        history: List[BarData] = []
+        limit: int = LMIMIT_VT2FTX[req.interval]
 
-        resp = self.request(
-            "GET",
-            path,
-            data={"security": Security.NONE},
-            params=params
-        )
+        start: int = int(datetime.timestamp(req.start))
+        end: int = int(datetime.timestamp(req.end))
 
-        data = resp.json()
-        if not data:
-            return 0
-        for his_data in data["result"]:
-            bar = BarData(
-                symbol=req.symbol,
-                exchange=req.exchange,
-                datetime=datetime.utcfromtimestamp(his_data["time"] / 1000),
-                interval=req.interval,
-                volume=his_data["volume"],
-                open_price=his_data["open"],
-                high_price=his_data["high"],
-                low_price=his_data["low"],
-                close_price=his_data["close"],
-                gateway_name=self.gateway_name
+        tmp_start = max(start, end - WINDOW_VT2FTX[req.interval] * limit)
+
+        buf: List[BarData] = None
+
+        while True:
+            params = {
+                "resolution": WINDOW_VT2FTX[req.interval],
+                "start_time": tmp_start,
+                "end_time": end
+            }
+
+            path = f"/api/markets/{req.symbol}/candles?"
+
+            resp: Response = self.request(
+                "GET",
+                path,
+                data={"security": Security.NONE},
+                params=params
             )
-            history.append(bar)
+
+            # 如果请求失败则终止循环
+            if resp.status_code // 100 != 2:
+                msg: str = f"获取历史数据失败，状态码：{resp.status_code}，信息：{resp.text}"
+                self.gateway.write_log(msg)
+                break
+            else:
+                data: dict = resp.json()
+                # 整个时间段内都未有数据，终止循环
+                if (not data["result"]) and (buf is None):
+                    stop_time = datetime.utcfromtimestamp(tmp_start)
+                    msg: str = f"获取历史数据为空，开始时间：{stop_time}"
+                    self.gateway.write_log(msg)
+                    break
+                # 剩下的时间端内不再有数据，终止循环
+                elif (not data["result"]) and (buf is not None):
+                    msg: str = "获取历史数据完成"
+                    self.gateway.write_log(msg)
+                    break
+
+                buf: List[BarData] = []
+
+                for his_data in data["result"]:
+                    bar = BarData(
+                        symbol=req.symbol,
+                        exchange=req.exchange,
+                        datetime=datetime.utcfromtimestamp(his_data["time"] / 1000),
+                        interval=req.interval,
+                        volume=his_data["volume"],
+                        open_price=his_data["open"],
+                        high_price=his_data["high"],
+                        low_price=his_data["low"],
+                        close_price=his_data["close"],
+                        gateway_name=self.gateway_name
+                    )
+                    buf.append(bar)
+
+                begin: datetime = buf[0].datetime
+                end: datetime = buf[-1].datetime
+
+                history.extend(buf)
+
+                msg: str = f"获取历史数据成功，{req.symbol} - {req.interval.value}，{begin} - {end}"
+                self.gateway.write_log(msg)
+
+                # 最后一段查询结束后终止
+                if tmp_start == start:
+                    msg: str = "获取历史数据完成"
+                    self.gateway.write_log(msg)
+                    break
+
+                # 更新下一个时间段
+                end = tmp_start
+                tmp_start = max(start, end - WINDOW_VT2FTX[req.interval] * limit)
+
         return history
 
     def query_price(self, symbol: str) -> List:
