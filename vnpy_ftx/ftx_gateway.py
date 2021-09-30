@@ -736,7 +736,9 @@ class FtxWebsocketApi(WebsocketClient):
         self.authenticate(self.api_key, self.api_secret_key)
 
         for req in list(self.subscribed.values()):
-            self.subscribe(req)
+            self.resubscribe(req)
+
+        self.subscribe_private_channels()
 
     def on_disconnected(self) -> None:
         """"""
@@ -777,7 +779,6 @@ class FtxWebsocketApi(WebsocketClient):
         self.send_packet(subscribe_ticker)
         subscribe_orderbook = {'op': 'subscribe', 'channel': 'orderbook', 'market': req.symbol}
         self.send_packet(subscribe_orderbook)
-        self.subscribe_private_channels()
 
     def unsubscribe(self, req: SubscribeRequest) -> None:
         """取消订阅行情"""
@@ -796,6 +797,18 @@ class FtxWebsocketApi(WebsocketClient):
             symbol = req.vt_symbol.split(".")[0]
             self.orderbook.pop(symbol)
             self.holc.pop(symbol)
+
+    def resubscribe(self, req: SubscribeRequest) -> None:
+        """重连后订阅行情"""
+        if req.symbol not in symbol_contract_map:
+            self.gateway.write_log(f"找不到该合约代码{req.symbol}")
+            return
+
+        self.subscribed[req.vt_symbol] = req
+        subscribe_ticker = {'op': 'subscribe', 'channel': 'ticker', 'market': req.symbol}
+        self.send_packet(subscribe_ticker)
+        subscribe_orderbook = {'op': 'subscribe', 'channel': 'orderbook', 'market': req.symbol}
+        self.send_packet(subscribe_orderbook)
 
     def subscribe_private_channels(self) -> None:
         """订阅个人orders和fills行情"""
