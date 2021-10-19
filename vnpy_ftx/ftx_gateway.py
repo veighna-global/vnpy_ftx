@@ -330,8 +330,8 @@ class FtxRestApi(RestClient):
         """连接REST服务器"""
         self.key = key
         self.secret = secret.encode()
-        self.proxy_port = proxy_host
-        self.proxy_host = proxy_port
+        self.proxy_host = proxy_host
+        self.proxy_port = proxy_port
 
         self.connect_time = (
             int(datetime.now().strftime("%y%m%d%H%M%S")) * self.order_count
