@@ -643,7 +643,7 @@ class FtxRestApi(RestClient):
                     bar = BarData(
                         symbol=req.symbol,
                         exchange=req.exchange,
-                        datetime=datetime.utcfromtimestamp(his_data["time"] / 1000),
+                        datetime=datetime.fromtimestamp(his_data["time"] / 1000, timezone.utc),
                         interval=req.interval,
                         volume=his_data["volume"],
                         open_price=his_data["open"],
