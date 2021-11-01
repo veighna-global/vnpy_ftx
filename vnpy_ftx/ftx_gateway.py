@@ -657,6 +657,7 @@ class FtxRestApi(RestClient):
                 begin: datetime = buf[0].datetime
                 end: datetime = buf[-1].datetime
 
+                buf = list(reversed(buf))
                 history.extend(buf)
 
                 msg: str = f"获取历史数据成功，{req.symbol} - {req.interval.value}，{begin} - {end}"
@@ -672,6 +673,7 @@ class FtxRestApi(RestClient):
                 end = tmp_start
                 tmp_start = max(start, end - WINDOW_VT2FTX[req.interval] * limit)
 
+        history = list(reversed(history))
         return history
 
     def query_price(self, symbol: str) -> List:
