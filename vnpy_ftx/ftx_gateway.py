@@ -999,7 +999,10 @@ class FtxWebsocketApi(WebsocketClient):
 
 def change_datetime(created_time: str) -> datetime:
     """更改时区"""
-    created_time = datetime.strptime(created_time[:-6], "%Y-%m-%dT%H:%M:%S.%f")
+    try:
+        created_time = datetime.strptime(created_time[:-6], "%Y-%m-%dT%H:%M:%S.%f")
+    except ValueError:
+        created_time = datetime.strptime(created_time[:-6], "%Y-%m-%dT%H:%M:%S")
     created_time = created_time.replace(tzinfo=timezone.utc)
     created_time = created_time.astimezone(pytz.timezone(str(CHINA_TZ)))
     return created_time
